@@ -31,7 +31,7 @@ template<typename RandomAccessIterator1, typename RandomAccessIterator2>
   {
     thrust::cpp::tag seq;
 
-    size_t i = r.begin() / grainsize;
+    size_t i = divide_ri(r.begin(), grainsize);
 
     result[i] =
       thrust::unique_copy(seq, first + r.begin(), first + r.end(), thrust::make_discard_iterator()) -
@@ -55,9 +55,6 @@ template<typename RandomAccessIterator1, typename Size, typename RandomAccessIte
                                  RandomAccessIterator2 result)
 {
   typename thrust::iterator_difference<RandomAccessIterator1>::type n = last - first;
-
-  std::cout << "count_unique_per_interval(): interval_size: " << interval_size << std::endl;
-
   tbb::parallel_for(::tbb::blocked_range<size_t>(0, last - first, interval_size), make_body(first, result, interval_size));
 }
 
@@ -116,10 +113,19 @@ template<typename InputIterator1,
     ++values_output;
   }
 
-  typename InputIterator1::difference_type num_remaining = keys_last - keys_first;
 
-  thrust::cpp::tag seq;
-  return thrust::reduce(seq, values_first + 1, values_first + num_remaining, *values_first);
+  typename OutputIterator2::value_type result = 0;
+
+  typename InputIterator1::difference_type num_remaining = keys_last - keys_first;
+  if(num_remaining)
+  {
+    //std::cout << "reduce_by_key_with_carry(): num_remaining: " << num_remaining << std::endl;
+
+    thrust::cpp::tag seq;
+    result = thrust::reduce(seq, values_first + 1, values_first + num_remaining, *values_first);
+  }
+  
+  return result;
 }
 
 
@@ -141,7 +147,7 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
 
   void operator()(const tbb::blocked_range<size_t> &r) const
   {
-    size_t i = r.begin() / grainsize;
+    size_t i = divide_ri(r.begin(), grainsize);
 
     Iterator1 my_keys_first = keys_first + r.begin();
     Iterator1 my_keys_last  = keys_first + r.end();
@@ -182,13 +188,16 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   // assume a quad core
   size_t p = 4;
 
-  // decompose the input into intervals of size N / P
-  std::vector<size_t> num_unique_keys_per_interval(p, 0);
-
+  // generate O(P) intervals of sequential work
   typename thrust::iterator_difference<Iterator1>::type n = keys_last - keys_first;
-  size_t interval_size = divide_ri(n,p);
+  size_t interval_size = n / p;
+  size_t num_intervals = divide_ri(n, interval_size);
+
+  // decompose the input into intervals of size N / num_intervals
+  std::vector<size_t> num_unique_keys_per_interval(num_intervals, 0);
 
   std::cout << "reduce_by_key(): interval_size: " << interval_size << std::endl;
+  std::cout << "reduce_by_key(): num_intervals: " << num_intervals << std::endl;
 
   // count the number of unique keys in each interval
   count_unique_per_interval(keys_first, keys_last, interval_size, num_unique_keys_per_interval.begin());
@@ -198,14 +207,15 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   std::cout << std::endl;
 
   // scan the counts to get each body's offset
-  std::vector<size_t> scatter_indices(p, 0);
+  std::vector<size_t> scatter_indices(num_intervals, 0);
   thrust::cpp::tag seq;
-  thrust::exclusive_scan(num_unique_keys_per_interval.begin(), num_unique_keys_per_interval.end(), 
+  thrust::exclusive_scan(seq,
+                         num_unique_keys_per_interval.begin(), num_unique_keys_per_interval.end(), 
                          scatter_indices.begin(),
                          size_t(0));
 
   // do a reduce_by_key serially in each thread
-  std::vector<typename Iterator2::value_type> carry(p, 0);
+  std::vector<typename Iterator2::value_type> carry(num_intervals, 0);
   tbb::parallel_for(::tbb::blocked_range<size_t>(0, keys_last - keys_first, interval_size),
     make_serial_reduce_by_key_body(keys_first, values_first, num_unique_keys_per_interval.begin(), scatter_indices.begin(), keys_result, values_result, carry.begin(), interval_size));
 
@@ -225,19 +235,25 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
 
 int main()
 {
-  std::vector<int> keys(8);
+  size_t segment_size = 2;
+  size_t n = 4 * segment_size;
+  std::vector<int> keys(n);
   for(int i = 0; i < keys.size(); ++i)
   {
-    keys[i] = i / 2;
+    keys[i] = i / segment_size;
   }
 
-  std::vector<int> values(8, 1);
+  std::vector<int> values(n, 1);
 
-  std::vector<int> keys_result(4);
-  std::vector<int> values_result(4);
+  std::vector<int> keys_result(n / segment_size);
+  std::vector<int> values_result(n / segment_size);
 
   std::cout << "main(): keys: ";
   std::copy(keys.begin(), keys.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
+
+  std::cout << "main(): values: ";
+  std::copy(values.begin(), values.end(), std::ostream_iterator<int>(std::cout, " "));
   std::cout << std::endl;
 
   auto ends = reduce_by_key(keys.begin(), keys.end(), values.begin(), keys_result.begin(), values_result.begin());
