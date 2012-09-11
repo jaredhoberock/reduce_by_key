@@ -6,6 +6,7 @@
 #include <vector>
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
+#include <iostream>
 
 
 template<typename L, typename R>
@@ -55,7 +56,9 @@ template<typename RandomAccessIterator1, typename Size, typename RandomAccessIte
 {
   typename thrust::iterator_difference<RandomAccessIterator1>::type n = last - first;
 
-  tbb::parallel_for(::tbb::blocked_range<size_t>(0, interval_size), make_body(first, result, interval_size));
+  std::cout << "count_unique_per_interval(): interval_size: " << interval_size << std::endl;
+
+  tbb::parallel_for(::tbb::blocked_range<size_t>(0, last - first, interval_size), make_body(first, result, interval_size));
 }
 
 
@@ -77,7 +80,7 @@ template<typename InputIterator1,
 
   typedef typename InputIterator2::value_type TemporaryType;
 
-  if(keys_first != keys_last)
+  if(keys_first != keys_last && num_unique_keys > 1)
   {
     InputKeyType  temp_key   = *keys_first;
     TemporaryType temp_value = *values_first;
@@ -185,8 +188,14 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   typename thrust::iterator_difference<Iterator1>::type n = keys_last - keys_first;
   size_t interval_size = divide_ri(n,p);
 
+  std::cout << "reduce_by_key(): interval_size: " << interval_size << std::endl;
+
   // count the number of unique keys in each interval
   count_unique_per_interval(keys_first, keys_last, interval_size, num_unique_keys_per_interval.begin());
+
+  std::cout << "reduce_by_key(): num_unique_keys_per_interval: ";
+  std::copy(num_unique_keys_per_interval.begin(), num_unique_keys_per_interval.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
 
   // scan the counts to get each body's offset
   std::vector<size_t> scatter_indices(p, 0);
@@ -196,19 +205,21 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
                          size_t(0));
 
   // do a reduce_by_key serially in each thread
-  std::vector<typename Iterator2::value_type> carry(p);
-  tbb::parallel_for(::tbb::blocked_range<size_t>(0, interval_size),
+  std::vector<typename Iterator2::value_type> carry(p, 0);
+  tbb::parallel_for(::tbb::blocked_range<size_t>(0, keys_last - keys_first, interval_size),
     make_serial_reduce_by_key_body(keys_first, values_first, num_unique_keys_per_interval.begin(), scatter_indices.begin(), keys_result, values_result, carry.begin(), interval_size));
 
+  std::cout << "reduce_by_key(): carries: ";
+  std::copy(carry.begin(), carry.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
+
   // accumulate the carries
-  for(int i = 1; i < scatter_indices.size(); ++i)
+  for(int i = 0; i < scatter_indices.size(); ++i)
   {
-    values_result[scatter_indices[i]] += carry[i];
+    values_result[num_unique_keys_per_interval[i] + scatter_indices[i] - 1] += carry[i];
   }
 
   size_t size_of_result = scatter_indices.back() + num_unique_keys_per_interval.back();
-  values_result[size_of_result-1] += carry.back();
-
   return std::make_pair(keys_result + size_of_result, values_result + size_of_result);
 }
 
@@ -225,7 +236,22 @@ int main()
   std::vector<int> keys_result(4);
   std::vector<int> values_result(4);
 
-  reduce_by_key(keys.begin(), keys.end(), values.begin(), keys_result.begin(), values_result.begin());
+  std::cout << "main(): keys: ";
+  std::copy(keys.begin(), keys.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
+
+  auto ends = reduce_by_key(keys.begin(), keys.end(), values.begin(), keys_result.begin(), values_result.begin());
+
+  keys_result.erase(ends.first, keys_result.end());
+  values_result.erase(ends.second, values_result.end());
+
+  std::cout << "main(): keys_result: ";
+  std::copy(keys_result.begin(), keys_result.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
+
+  std::cout << "main(): values_result: ";
+  std::copy(values_result.begin(), values_result.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
 
   return 0;
 }
