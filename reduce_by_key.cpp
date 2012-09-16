@@ -1,5 +1,6 @@
 #include <utility>
 #include <thrust/iterator/discard_iterator.h>
+#include <thrust/iterator/reverse_iterator.h>
 #include <thrust/system/cpp/memory.h>
 #include <thrust/unique.h>
 #include <thrust/reduce.h>
@@ -74,7 +75,41 @@ template<typename RandomAccessIterator1, typename Size, typename RandomAccessIte
 
 
 template<typename InputIterator1,
-         typename Size,
+         typename InputIterator2>
+  std::pair<
+    InputIterator1,
+    std::pair<
+      typename InputIterator1::value_type,
+      typename InputIterator2::value_type
+    >
+  >
+    reduce_last_segment_backward(InputIterator1 keys_first,
+                                 InputIterator1 keys_last,
+                                 InputIterator2 values_first)
+{
+  size_t n = keys_last - keys_first;
+
+  // reverse the ranges and consume from the end
+  thrust::reverse_iterator<InputIterator1> keys_first_r(keys_last);
+  thrust::reverse_iterator<InputIterator1> keys_last_r(keys_first);
+  thrust::reverse_iterator<InputIterator2> values_first_r(values_first + n);
+
+  typename InputIterator1::value_type result_key = *keys_first_r;
+  typename InputIterator2::value_type result_value = *values_first_r;
+
+  // consume the entirety of the first key's sequence
+  for(++keys_first_r, ++values_first_r;
+      (keys_first_r != keys_last_r) && (*keys_first_r == result_key);
+      ++keys_first_r, ++values_first_r)
+  {
+    result_value = result_value + *values_first_r;
+  }
+
+  return std::make_pair(keys_first_r.base(), std::make_pair(result_key, result_value));
+}
+
+
+template<typename InputIterator1,
          typename InputIterator2,
          typename OutputIterator1,
          typename OutputIterator2>
@@ -84,84 +119,44 @@ template<typename InputIterator1,
   >
     reduce_by_key_with_carry(InputIterator1 keys_first, 
                              InputIterator1 keys_last,
-                             Size num_unique_keys,
                              InputIterator2 values_first,
                              OutputIterator1 keys_output,
                              OutputIterator2 values_output)
 {
-  typedef typename thrust::iterator_traits<InputIterator1>::value_type  InputKeyType;
-  typedef typename thrust::iterator_traits<InputIterator2>::value_type  InputValueType;
+  typedef typename thrust::iterator_traits<InputIterator1>::value_type InputKeyType;
+  typedef typename thrust::iterator_traits<InputIterator2>::value_type InputValueType;
 
-  typedef typename InputIterator2::value_type TemporaryType;
+  // first, consume the last sequence to produce the carry
+  std::pair<
+    typename OutputIterator1::value_type,
+    typename OutputIterator2::value_type
+  > result;
 
-  if(keys_first != keys_last && num_unique_keys > 1)
-  {
-    InputKeyType  temp_key   = *keys_first;
-    TemporaryType temp_value = *values_first;
+  std::tie(keys_last, result) = reduce_last_segment_backward(keys_first, keys_last, values_first);
 
-    for(++keys_first, ++values_first;
-        (keys_first != keys_last) && (num_unique_keys > 1);
-        ++keys_first, ++values_first, --num_unique_keys)
-    {
-      InputKeyType    key  = *keys_first;
-      InputValueType value = *values_first;
-
-      if(temp_key == key)
-      {
-        temp_value = temp_value + value;
-      }
-      else
-      {
-        *keys_output   = temp_key;
-        *values_output = temp_value;
-
-        ++keys_output;
-        ++values_output;
-
-        temp_key   = key;
-        temp_value = value;
-      }
-    }
-
-    *keys_output   = temp_key;
-    *values_output = temp_value;
-
-    ++keys_output;
-    ++values_output;
-  }
-
-
-  typename OutputIterator1::value_type result_key = *keys_first;
-  typename OutputIterator2::value_type result_value = 0;
-
-  typename InputIterator1::difference_type num_remaining = keys_last - keys_first;
-  assert(num_remaining);
-  if(num_remaining)
-  {
-    thrust::cpp::tag seq;
-    result_value = thrust::reduce(seq, values_first + 1, values_first + num_remaining, *values_first);
-  }
+  // finish with sequential reduce_by_key
+  thrust::cpp::tag seq;
+  thrust::reduce_by_key(seq, keys_first, keys_last, values_first, keys_output, values_output);
   
-  return std::make_pair(result_key, result_value);
+  return result;
 }
 
 
-template<typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename Iterator5, typename Iterator6, typename Iterator7, typename Iterator8>
+template<typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename Iterator5, typename Iterator6, typename Iterator7>
   struct serial_reduce_by_key_body
 {
   Iterator1 keys_first;
   Iterator2 values_first;
-  Iterator3 num_unique_keys;
-  Iterator4 result_offset;
-  Iterator5 keys_result;
-  Iterator6 values_result;
-  Iterator7 carry_result_key;
-  Iterator8 carry_result_value;
+  Iterator3 result_offset;
+  Iterator4 keys_result;
+  Iterator5 values_result;
+  Iterator6 carry_result_key;
+  Iterator7 carry_result_value;
   size_t n;
   size_t interval_size;
 
-  serial_reduce_by_key_body(Iterator1 keys_first, Iterator2 values_first, Iterator3 num_unique_keys, Iterator4 result_offset, Iterator5 keys_result, Iterator6 values_result, Iterator7 carry_result_key, Iterator8 carry_result_value, size_t n, size_t interval_size)
-    : keys_first(keys_first), values_first(values_first), num_unique_keys(num_unique_keys), result_offset(result_offset), keys_result(keys_result), values_result(values_result), carry_result_key(carry_result_key), carry_result_value(carry_result_value), n(n), interval_size(interval_size)
+  serial_reduce_by_key_body(Iterator1 keys_first, Iterator2 values_first, Iterator3 result_offset, Iterator4 keys_result, Iterator5 values_result, Iterator6 carry_result_key, Iterator7 carry_result_value, size_t n, size_t interval_size)
+    : keys_first(keys_first), values_first(values_first), result_offset(result_offset), keys_result(keys_result), values_result(values_result), carry_result_key(carry_result_key), carry_result_value(carry_result_value), n(n), interval_size(interval_size)
   {}
 
   void operator()(const tbb::blocked_range<size_t> &r) const
@@ -175,36 +170,34 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
 
     Iterator1 my_keys_first         = keys_first         + offset_to_first;
     Iterator1 my_keys_last          = keys_first         + offset_to_last;
-    Iterator3 my_num_unique_keys    = num_unique_keys    + interval_idx;
     Iterator2 my_values_first       = values_first       + offset_to_first;
-    Iterator4 my_result_offset      = result_offset      + interval_idx;
-    Iterator5 my_keys_result        = keys_result        + *my_result_offset;
-    Iterator6 my_values_result      = values_result      + *my_result_offset;
-    Iterator7 my_carry_result_key   = carry_result_key   + interval_idx;
-    Iterator8 my_carry_result_value = carry_result_value + interval_idx;
+    Iterator3 my_result_offset      = result_offset      + interval_idx;
+    Iterator4 my_keys_result        = keys_result        + *my_result_offset;
+    Iterator5 my_values_result      = values_result      + *my_result_offset;
+    Iterator6 my_carry_result_key   = carry_result_key   + interval_idx;
+    Iterator7 my_carry_result_value = carry_result_value + interval_idx;
 
     std::cout << "interval " << interval_idx << " result offset: " << *my_result_offset << std::endl;
 
-    //// consume the rest of the interval with reduce_by_key
-    //thrust::cpp::tag seq;
-    //auto carry = reduce_by_key_with_carry(my_keys_first,
-    //                                      my_keys_last,
-    //                                      *my_num_unique_keys,
-    //                                      my_values_first,
-    //                                      my_keys_result,
-    //                                      my_values_result);
+    // consume the rest of the interval with reduce_by_key
+    thrust::cpp::tag seq;
+    auto carry = reduce_by_key_with_carry(my_keys_first,
+                                          my_keys_last,
+                                          my_values_first,
+                                          my_keys_result,
+                                          my_values_result);
 
-    //*my_carry_result_key = carry.first;
-    //*my_carry_result_value = carry.second;
+    *my_carry_result_key = carry.first;
+    *my_carry_result_value = carry.second;
   }
 };
 
 
-template<typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename Iterator5, typename Iterator6, typename Iterator7, typename Iterator8>
-  serial_reduce_by_key_body<Iterator1,Iterator2,Iterator3,Iterator4,Iterator5,Iterator6,Iterator7,Iterator8>
-    make_serial_reduce_by_key_body(Iterator1 keys_first, Iterator2 values_first, Iterator3 num_unique_keys, Iterator4 result_offset, Iterator5 keys_result, Iterator6 values_result, Iterator7 carry_result_key, Iterator8 carry_result_value, size_t n, size_t interval_size)
+template<typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename Iterator5, typename Iterator6, typename Iterator7>
+  serial_reduce_by_key_body<Iterator1,Iterator2,Iterator3,Iterator4,Iterator5,Iterator6,Iterator7>
+    make_serial_reduce_by_key_body(Iterator1 keys_first, Iterator2 values_first, Iterator3 result_offset, Iterator4 keys_result, Iterator5 values_result, Iterator6 carry_result_key, Iterator7 carry_result_value, size_t n, size_t interval_size)
 {
-  return serial_reduce_by_key_body<Iterator1,Iterator2,Iterator3,Iterator4,Iterator5,Iterator6,Iterator7,Iterator8>(keys_first, values_first, num_unique_keys, result_offset, keys_result, values_result, carry_result_key, carry_result_value, n, interval_size);
+  return serial_reduce_by_key_body<Iterator1,Iterator2,Iterator3,Iterator4,Iterator5,Iterator6,Iterator7>(keys_first, values_first, result_offset, keys_result, values_result, carry_result_key, carry_result_value, n, interval_size);
 }
 
 
@@ -251,7 +244,7 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   std::vector<typename Iterator1::value_type> carry_key(num_intervals);
   std::vector<typename Iterator2::value_type> carry_value(num_intervals, 0);
   tbb::parallel_for(::tbb::blocked_range<size_t>(0, num_intervals, 1),
-    make_serial_reduce_by_key_body(keys_first, values_first, num_unique_keys_per_interval.begin(), scatter_indices.begin(), keys_result, values_result, carry_key.begin(), carry_value.begin(), n, interval_size));
+    make_serial_reduce_by_key_body(keys_first, values_first, scatter_indices.begin(), keys_result, values_result, carry_key.begin(), carry_value.begin(), n, interval_size));
 
   std::cout << "reduce_by_key(): carry keys: ";
   std::copy(carry_key.begin(), carry_key.end(), std::ostream_iterator<int>(std::cout, " "));
@@ -275,8 +268,7 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
 int main()
 {
   size_t segment_size = 2;
-  //size_t n = 5 * segment_size;
-  size_t n = 13;
+  size_t n = 5 * segment_size;
   std::vector<int> keys(n);
   for(int i = 0; i < keys.size(); ++i)
   {
@@ -298,33 +290,33 @@ int main()
 
   auto ends = reduce_by_key(keys.begin(), keys.end(), values.begin(), keys_result.begin(), values_result.begin());
 
-  //keys_result.erase(ends.first, keys_result.end());
-  //values_result.erase(ends.second, values_result.end());
+  keys_result.erase(ends.first, keys_result.end());
+  values_result.erase(ends.second, values_result.end());
 
-  //std::cout << "main(): keys_result: ";
-  //std::copy(keys_result.begin(), keys_result.end(), std::ostream_iterator<int>(std::cout, " "));
-  //std::cout << std::endl;
+  std::cout << "main(): keys_result: ";
+  std::copy(keys_result.begin(), keys_result.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
 
-  //std::cout << "main(): values_result: ";
-  //std::copy(values_result.begin(), values_result.end(), std::ostream_iterator<int>(std::cout, " "));
-  //std::cout << std::endl;
+  std::cout << "main(): values_result: ";
+  std::copy(values_result.begin(), values_result.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
 
-  //std::vector<int> keys_result_reference(n / segment_size);
-  //std::vector<int> values_result_reference(n / segment_size);
-  //auto ends1 = thrust::reduce_by_key(keys.begin(), keys.end(), values.begin(), keys_result_reference.begin(), values_result_reference.begin());
-  //keys_result_reference.erase(ends1.first, keys_result_reference.end());
-  //values_result_reference.erase(ends1.second, values_result_reference.end());
+  std::vector<int> keys_result_reference(n / segment_size);
+  std::vector<int> values_result_reference(n / segment_size);
+  auto ends1 = thrust::reduce_by_key(keys.begin(), keys.end(), values.begin(), keys_result_reference.begin(), values_result_reference.begin());
+  keys_result_reference.erase(ends1.first, keys_result_reference.end());
+  values_result_reference.erase(ends1.second, values_result_reference.end());
 
-  //std::cout << "main(): keys_result_reference: ";
-  //std::copy(keys_result_reference.begin(), keys_result_reference.end(), std::ostream_iterator<int>(std::cout, " "));
-  //std::cout << std::endl;
+  std::cout << "main(): keys_result_reference: ";
+  std::copy(keys_result_reference.begin(), keys_result_reference.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
 
-  //std::cout << "main(): values_result_reference: ";
-  //std::copy(values_result_reference.begin(), values_result_reference.end(), std::ostream_iterator<int>(std::cout, " "));
-  //std::cout << std::endl;
+  std::cout << "main(): values_result_reference: ";
+  std::copy(values_result_reference.begin(), values_result_reference.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
 
-  //assert(keys_result_reference == keys_result);
-  //assert(values_result_reference == values_result);
+  assert(keys_result_reference == keys_result);
+  assert(values_result_reference == values_result);
 
   return 0;
 }
