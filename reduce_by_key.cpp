@@ -9,6 +9,9 @@
 #include <tbb/parallel_for.h>
 #include <iostream>
 #include <cassert>
+#include "head_flags.hpp"
+#include "tail_flags.hpp"
+#include "reduce_intervals.hpp"
 
 
 template<typename L, typename R>
@@ -69,7 +72,6 @@ template<typename RandomAccessIterator1, typename Size, typename RandomAccessIte
 
   size_t num_intervals = divide_ri(n, interval_size);
 
-  //tbb::parallel_for(::tbb::blocked_range<size_t>(0, last - first, interval_size), make_body(first, result, interval_size));
   tbb::parallel_for(::tbb::blocked_range<size_t>(0, num_intervals, 1), make_body(first, result, n, interval_size));
 }
 
@@ -177,8 +179,6 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
     Iterator6 my_carry_result_key   = carry_result_key   + interval_idx;
     Iterator7 my_carry_result_value = carry_result_value + interval_idx;
 
-    std::cout << "interval " << interval_idx << " result offset: " << *my_result_offset << std::endl;
-
     // consume the rest of the interval with reduce_by_key
     thrust::cpp::tag seq;
     auto carry = reduce_by_key_with_carry(my_keys_first,
@@ -208,8 +208,8 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
                   Iterator3 keys_result,
                   Iterator4 values_result)
 {
-  // assume a quad core
-  size_t p = 4;
+  // assume a dual core
+  size_t p = 2;
 
   // generate O(P) intervals of sequential work
   typename thrust::iterator_difference<Iterator1>::type n = keys_last - keys_first;
@@ -217,34 +217,32 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   size_t num_intervals = divide_ri(n, interval_size);
 
   // decompose the input into intervals of size N / num_intervals
-  std::vector<size_t> num_unique_keys_per_interval(num_intervals, 0);
+  // add one extra element to this vector to store the size of the entire result
+  std::vector<size_t> interval_output_offsets(num_intervals + 1, 0);
+  auto tail_flags = make_tail_flags(keys_first, keys_last);
 
-  std::cout << "reduce_by_key(): interval_size: " << interval_size << std::endl;
-  std::cout << "reduce_by_key(): num_intervals: " << num_intervals << std::endl;
+  // first count the number of tail flags in each interval
+  reduce_intervals(tail_flags.begin(), tail_flags.end(), interval_size, interval_output_offsets.begin() + 1, thrust::plus<size_t>());
 
-  // count the number of unique keys in each interval
-  count_unique_per_interval(keys_first, keys_last, interval_size, num_unique_keys_per_interval.begin());
-
-  std::cout << "reduce_by_key(): num_unique_keys_per_interval: ";
-  std::copy(num_unique_keys_per_interval.begin(), num_unique_keys_per_interval.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << "reduce_by_key(): num_tail_flags_per_interval: ";
+  std::copy(interval_output_offsets.begin(), interval_output_offsets.end(), std::ostream_iterator<int>(std::cout, " "));
   std::cout << std::endl;
 
-  // scan the counts to get each body's offset
-  // XXX this step is wrong
-  // XXX we need to find the number of unique keys occurring before interval i
-  // XXX NOT the sum of unique keys per interval before interval i
-  std::vector<size_t> scatter_indices(num_intervals, 0);
+  // scan the counts to get each body's output offset
   thrust::cpp::tag seq;
-  thrust::exclusive_scan(seq,
-                         num_unique_keys_per_interval.begin(), num_unique_keys_per_interval.end(), 
-                         scatter_indices.begin(),
-                         size_t(0));
+  thrust::inclusive_scan(seq,
+                         interval_output_offsets.begin() + 1, interval_output_offsets.end(), 
+                         interval_output_offsets.begin() + 1);
+
+  std::cout << "reduce_by_key(): interval_output_offsets: ";
+  std::copy(interval_output_offsets.begin(), interval_output_offsets.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
 
   // do a reduce_by_key serially in each thread
   std::vector<typename Iterator1::value_type> carry_key(num_intervals);
   std::vector<typename Iterator2::value_type> carry_value(num_intervals, 0);
   tbb::parallel_for(::tbb::blocked_range<size_t>(0, num_intervals, 1),
-    make_serial_reduce_by_key_body(keys_first, values_first, scatter_indices.begin(), keys_result, values_result, carry_key.begin(), carry_value.begin(), n, interval_size));
+    make_serial_reduce_by_key_body(keys_first, values_first, interval_output_offsets.begin(), keys_result, values_result, carry_key.begin(), carry_value.begin(), n, interval_size));
 
   std::cout << "reduce_by_key(): carry keys: ";
   std::copy(carry_key.begin(), carry_key.end(), std::ostream_iterator<int>(std::cout, " "));
@@ -254,21 +252,40 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   std::copy(carry_value.begin(), carry_value.end(), std::ostream_iterator<int>(std::cout, " "));
   std::cout << std::endl;
 
+  size_t size_of_result = interval_output_offsets.back();
+
+  std::cout << "reduce_by_key(): partial values: ";
+  std::copy(values_result, values_result + size_of_result, std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
+
   // scatter the carry keys and accumulate the carry values
-  for(int i = 0; i < scatter_indices.size(); ++i)
+  for(int i = 0; i < num_intervals; ++i)
   {
-    keys_result[num_unique_keys_per_interval[i] + scatter_indices[i] - 1] = carry_key[i];
-    values_result[num_unique_keys_per_interval[i] + scatter_indices[i] - 1] += carry_value[i];
+    // the last segment and the last interval always coincide by definition
+    bool segment_coincides_with_interval_endpoint = (i+1 < num_intervals) ? tail_flags[i * interval_size] : true;
+
+    // if our interval's last segment straddles the segment, then we need to sum the carry
+    // to the next interval's output offset
+    // if it coincides with the segment's endpoint, then we need to sum the carry to the
+    // next interval's output offset less one
+    int output_idx = interval_output_offsets[i+1] - segment_coincides_with_interval_endpoint;
+
+    keys_result[output_idx] = carry_key[i];
+
+    std::cout << "adding carry " << carry_value[i] << " to partial " << output_idx << std::endl;
+
+    // XXX this += assumes the result has been initialized
+    values_result[output_idx] += carry_value[i];
   }
 
-  size_t size_of_result = scatter_indices.back() + num_unique_keys_per_interval.back();
   return std::make_pair(keys_result + size_of_result, values_result + size_of_result);
 }
 
 int main()
 {
   size_t segment_size = 2;
-  size_t n = 5 * segment_size;
+  size_t n = 2 * segment_size + 2;
+  //size_t n = 2 * segment_size + 3;
   std::vector<int> keys(n);
   for(int i = 0; i < keys.size(); ++i)
   {
@@ -277,8 +294,13 @@ int main()
 
   std::vector<int> values(n, 1);
 
-  std::cout << "main(): keys: ";
+  std::cout << "main(): keys      : ";
   std::copy(keys.begin(), keys.end(), std::ostream_iterator<int>(std::cout, " "));
+  std::cout << std::endl;
+
+  std::cout << "main(): tail_flags: ";
+  auto flags = make_tail_flags(keys.begin(), keys.end());
+  std::copy(flags.begin(), flags.end(), std::ostream_iterator<int>(std::cout, " "));
   std::cout << std::endl;
 
   std::cout << "main(): values: ";
