@@ -158,28 +158,31 @@ template<typename Iterator>
 template<typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename Iterator5, typename Iterator6>
   struct serial_reduce_by_key_body
 {
+  typedef typename thrust::iterator_difference<Iterator1>::type size_type;
+
   Iterator1 keys_first;
   Iterator2 values_first;
   Iterator3 result_offset;
   Iterator4 keys_result;
   Iterator5 values_result;
   Iterator6 carry_result;
-  size_t n;
-  size_t interval_size;
-  size_t num_intervals;
 
-  serial_reduce_by_key_body(Iterator1 keys_first, Iterator2 values_first, Iterator3 result_offset, Iterator4 keys_result, Iterator5 values_result, Iterator6 carry_result, size_t n, size_t interval_size, size_t num_intervals)
+  size_type n;
+  size_type interval_size;
+  size_type num_intervals;
+
+  serial_reduce_by_key_body(Iterator1 keys_first, Iterator2 values_first, Iterator3 result_offset, Iterator4 keys_result, Iterator5 values_result, Iterator6 carry_result, size_type n, size_type interval_size, size_type num_intervals)
     : keys_first(keys_first), values_first(values_first), result_offset(result_offset), keys_result(keys_result), values_result(values_result), carry_result(carry_result), n(n), interval_size(interval_size), num_intervals(num_intervals)
   {}
 
-  void operator()(const tbb::blocked_range<size_t> &r) const
+  void operator()(const tbb::blocked_range<size_type> &r) const
   {
     assert(r.size() == 1);
 
-    const size_t interval_idx = r.begin();
+    const size_type interval_idx = r.begin();
 
-    const size_t offset_to_first = interval_size * interval_idx;
-    const size_t offset_to_last = thrust::min(n, offset_to_first + interval_size);
+    const size_type offset_to_first = interval_size * interval_idx;
+    const size_type offset_to_last = thrust::min(n, offset_to_first + interval_size);
 
     Iterator1 my_keys_first     = keys_first    + offset_to_first;
     Iterator1 my_keys_last      = keys_first    + offset_to_last;
@@ -230,7 +233,7 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
 
 template<typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename Iterator5, typename Iterator6>
   serial_reduce_by_key_body<Iterator1,Iterator2,Iterator3,Iterator4,Iterator5,Iterator6>
-    make_serial_reduce_by_key_body(Iterator1 keys_first, Iterator2 values_first, Iterator3 result_offset, Iterator4 keys_result, Iterator5 values_result, Iterator6 carry_result, size_t n, size_t interval_size, size_t num_intervals)
+    make_serial_reduce_by_key_body(Iterator1 keys_first, Iterator2 values_first, Iterator3 result_offset, Iterator4 keys_result, Iterator5 values_result, Iterator6 carry_result, typename thrust::iterator_difference<Iterator1>::type n, size_t interval_size, size_t num_intervals)
 {
   return serial_reduce_by_key_body<Iterator1,Iterator2,Iterator3,Iterator4,Iterator5,Iterator6>(keys_first, values_first, result_offset, keys_result, values_result, carry_result, n, interval_size, num_intervals);
 }
@@ -243,20 +246,24 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
                   Iterator3 keys_result,
                   Iterator4 values_result)
 {
+
+  typedef typename thrust::iterator_difference<Iterator1>::type difference_type;
+  difference_type n = keys_last - keys_first;
+  if(n == 0) return std::make_pair(keys_result, values_result);
+
   // count the number of processors
-  const size_t p = tbb::tbb_thread::hardware_concurrency();
+  const unsigned int p = std::max(1u, tbb::tbb_thread::hardware_concurrency());
 
   // generate O(P) intervals of sequential work
-  typename thrust::iterator_difference<Iterator1>::type n = keys_last - keys_first;
-  size_t interval_size = n / p;
-  size_t num_intervals = divide_ri(n, interval_size);
+  difference_type interval_size = std::max<difference_type>(n, n / p);
+  difference_type num_intervals = divide_ri(n, interval_size);
 
   //std::clog << "reduce_by_key(): interval_size: " << interval_size << std::endl;
   //std::clog << "reduce_by_key(): num_intervals: " << num_intervals << std::endl;
 
   // decompose the input into intervals of size N / num_intervals
   // add one extra element to this vector to store the size of the entire result
-  std::vector<size_t> interval_output_offsets(num_intervals + 1, 0);
+  std::vector<difference_type> interval_output_offsets(num_intervals + 1, 0);
 
   // first count the number of tail flags in each interval
   auto tail_flags = make_tail_flags(keys_first, keys_last);
@@ -279,14 +286,14 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   // do a reduce_by_key serially in each thread
   // the final interval never has a carry by definition
   std::vector<typename Iterator2::value_type> carry_value(num_intervals - 1, 0);
-  tbb::parallel_for(::tbb::blocked_range<size_t>(0, num_intervals, 1),
+  tbb::parallel_for(::tbb::blocked_range<difference_type>(0, num_intervals, 1),
     make_serial_reduce_by_key_body(keys_first, values_first, interval_output_offsets.begin(), keys_result, values_result, carry_value.begin(), n, interval_size, num_intervals));
 
   //std::clog << "reduce_by_key(): carry values: ";
   //std::copy(carry_value.begin(), carry_value.end(), std::ostream_iterator<int>(std::clog, " "));
   //std::clog << std::endl;
 
-  size_t size_of_result = interval_output_offsets.back();
+  difference_type size_of_result = interval_output_offsets.back();
 
   //std::clog << "reduce_by_key(): partial values: ";
   //std::copy(values_result, values_result + size_of_result, std::ostream_iterator<int>(std::clog, " "));
@@ -336,6 +343,8 @@ int main()
 {
   //size_t n = 13;
   size_t n = 100000000;
+  //size_t n = 0;
+  //size_t n = 1;
   std::vector<int> keys(n);
   std::vector<int> values(n, 1);
 
