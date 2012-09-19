@@ -5,6 +5,7 @@
 #include <thrust/unique.h>
 #include <thrust/reduce.h>
 #include <vector>
+#include <iterator>
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 #include <iostream>
@@ -115,7 +116,9 @@ template<typename InputIterator1,
          typename InputIterator2,
          typename OutputIterator1,
          typename OutputIterator2>
-  std::pair<
+  std::tuple<
+    OutputIterator1,
+    OutputIterator2,
     typename OutputIterator1::value_type,
     typename OutputIterator2::value_type
   >
@@ -125,9 +128,6 @@ template<typename InputIterator1,
                              OutputIterator1 keys_output,
                              OutputIterator2 values_output)
 {
-  typedef typename thrust::iterator_traits<InputIterator1>::value_type InputKeyType;
-  typedef typename thrust::iterator_traits<InputIterator2>::value_type InputValueType;
-
   // first, consume the last sequence to produce the carry
   std::pair<
     typename OutputIterator1::value_type,
@@ -138,9 +138,9 @@ template<typename InputIterator1,
 
   // finish with sequential reduce_by_key
   thrust::cpp::tag seq;
-  thrust::reduce_by_key(seq, keys_first, keys_last, values_first, keys_output, values_output);
+  thrust::tie(keys_output, values_output) = thrust::reduce_by_key(seq, keys_first, keys_last, values_first, keys_output, values_output);
   
-  return result;
+  return std::make_tuple(keys_output, values_output, result.first, result.second);
 }
 
 
@@ -180,13 +180,26 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
     Iterator7 my_carry_result_value = carry_result_value + interval_idx;
 
     // consume the rest of the interval with reduce_by_key
-    thrust::cpp::tag seq;
-    auto carry = reduce_by_key_with_carry(my_keys_first,
-                                          my_keys_last,
-                                          my_values_first,
-                                          my_keys_result,
-                                          my_values_result);
+    typedef typename std::iterator_traits<Iterator1>::value_type key_type;
+    typedef typename std::iterator_traits<Iterator2>::value_type value_type;
+    std::pair<key_type, value_type> carry;
 
+    thrust::cpp::tag seq;
+    auto iterators_and_carry = reduce_by_key_with_carry(my_keys_first,
+                                                        my_keys_last,
+                                                        my_values_first,
+                                                        my_keys_result,
+                                                        my_values_result);
+    
+    std::tie(my_keys_result, my_values_result, carry.first, carry.second) =
+      reduce_by_key_with_carry(my_keys_first,
+                               my_keys_last,
+                               my_values_first,
+                               my_keys_result,
+                               my_values_result);
+
+    // XXX store to carry only when we actually have a carry
+    // XXX store to my_keys_result & my_values_result otherwise
     *my_carry_result_key = carry.first;
     *my_carry_result_value = carry.second;
   }
