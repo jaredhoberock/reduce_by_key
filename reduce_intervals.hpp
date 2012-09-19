@@ -6,6 +6,7 @@
 #include <thrust/system/cpp/memory.h>
 #include <thrust/reduce.h>
 #include <iostream>
+#include <cassert>
 
 namespace reduce_intervals_detail
 {
@@ -30,8 +31,10 @@ template<typename RandomAccessIterator1, typename RandomAccessIterator2, typenam
     : first(first), result(result), n(n), interval_size(interval_size), binary_op(binary_op)
   {}
 
-  void operator()(const tbb::blocked_range<Size> &r) const
+  void operator()(const ::tbb::blocked_range<Size> &r) const
   {
+    assert(r.size() == 1);
+
     Size interval_idx = r.begin();
 
     Size offset_to_first = interval_size * interval_idx;
@@ -72,7 +75,7 @@ template<typename RandomAccessIterator1, typename Size, typename RandomAccessIte
 
   Size num_intervals = reduce_intervals_detail::divide_ri(n, interval_size);
 
-  tbb::parallel_for(::tbb::blocked_range<Size>(0, num_intervals, 1), reduce_intervals_detail::make_body(first, result, Size(n), interval_size, binary_op));
+  ::tbb::parallel_for(::tbb::blocked_range<Size>(0, num_intervals, 1), reduce_intervals_detail::make_body(first, result, Size(n), interval_size, binary_op), ::tbb::simple_partitioner());
 }
 
 

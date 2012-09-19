@@ -80,6 +80,14 @@ template<typename RandomAccessIterator,
 };
 
 
+template<typename RandomAccessIterator, typename BinaryPredicate>
+  tail_flags<RandomAccessIterator>
+    make_tail_flags(RandomAccessIterator first, RandomAccessIterator last, BinaryPredicate binary_pred)
+{
+  return tail_flags<RandomAccessIterator, BinaryPredicate>(first, last, binary_pred);
+}
+
+
 template<typename RandomAccessIterator>
   tail_flags<RandomAccessIterator>
     make_tail_flags(RandomAccessIterator first, RandomAccessIterator last)
