@@ -255,7 +255,8 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   const unsigned int p = std::max(1u, tbb::tbb_thread::hardware_concurrency());
 
   // generate O(P) intervals of sequential work
-  difference_type interval_size = std::max<difference_type>(n, n / p);
+  const unsigned int subscription_rate = 1;
+  difference_type interval_size = std::max<difference_type>(n, n / (subscription_rate * p));
   difference_type num_intervals = divide_ri(n, interval_size);
 
   //std::clog << "reduce_by_key(): interval_size: " << interval_size << std::endl;
