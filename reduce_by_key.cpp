@@ -24,61 +24,6 @@ template<typename L, typename R>
 }
 
 
-template<typename RandomAccessIterator1, typename RandomAccessIterator2>
-  struct count_unique_body
-{
-  RandomAccessIterator1 first;
-  RandomAccessIterator2 result;
-  size_t n;
-  size_t interval_size;
-
-  count_unique_body(RandomAccessIterator1 first, RandomAccessIterator2 result, size_t n, size_t interval_size)
-    : first(first), result(result), n(n), interval_size(interval_size)
-  {}
-
-  void operator()(const tbb::blocked_range<size_t> &r) const
-  {
-    assert(r.size() == 1);
-
-    const size_t interval_idx = r.begin();
-
-    size_t offset_to_first = interval_size * interval_idx;
-    size_t offset_to_last  = thrust::min(n, offset_to_first + interval_size);
-
-    RandomAccessIterator1 my_first = first + offset_to_first;
-    RandomAccessIterator1 my_last  = first + offset_to_last;
-
-    thrust::cpp::tag seq;
-
-    result[interval_idx] =
-      thrust::unique_copy(seq, my_first, my_last, thrust::make_discard_iterator()) -
-      thrust::make_discard_iterator(0);
-  }
-};
-
-
-template<typename RandomAccessIterator1, typename RandomAccessIterator2>
-  count_unique_body<RandomAccessIterator1,RandomAccessIterator2>
-    make_body(RandomAccessIterator1 first, RandomAccessIterator2 result, size_t n, size_t interval_size)
-{
-  return count_unique_body<RandomAccessIterator1,RandomAccessIterator2>(first, result, n, interval_size);
-}
-
-
-template<typename RandomAccessIterator1, typename Size, typename RandomAccessIterator2>
-  void count_unique_per_interval(RandomAccessIterator1 first,
-                                 RandomAccessIterator1 last,
-                                 Size interval_size,
-                                 RandomAccessIterator2 result)
-{
-  typename thrust::iterator_difference<RandomAccessIterator1>::type n = last - first;
-
-  size_t num_intervals = divide_ri(n, interval_size);
-
-  tbb::parallel_for(::tbb::blocked_range<size_t>(0, num_intervals, 1), make_body(first, result, n, interval_size));
-}
-
-
 template<typename InputIterator1,
          typename InputIterator2>
   std::pair<
