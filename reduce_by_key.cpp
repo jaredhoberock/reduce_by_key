@@ -275,13 +275,17 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   for(int i = 0; i < num_intervals; ++i)
   {
     // the last segment and the last interval always coincide by definition
-    bool segment_coincides_with_interval_endpoint = (i+1 < num_intervals) ? tail_flags[i * interval_size] : true;
+    bool interval_has_no_carry = (i+1 < num_intervals) ? tail_flags[i * interval_size] : true;
 
+    // if our interval has a carry, then we need to sum the carry to the next interval's output offset
+    // if it does not have a carry, then we need to ignore carry_key[i] & carry_value[i]
+    // XXX actually implement this
+    
     // if our interval's last segment straddles the segment, then we need to sum the carry
     // to the next interval's output offset
     // if it coincides with the segment's endpoint, then we need to sum the carry to the
     // next interval's output offset less one
-    int output_idx = interval_output_offsets[i+1] - segment_coincides_with_interval_endpoint;
+    int output_idx = interval_output_offsets[i+1] - interval_has_no_carry;
 
     keys_result[output_idx] = carry_key[i];
 
