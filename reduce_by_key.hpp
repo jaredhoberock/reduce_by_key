@@ -13,6 +13,10 @@
 #include "reduce_intervals.hpp"
 
 
+namespace experimental
+{
+
+
 template<typename L, typename R>
   inline L divide_ri(const L x, const R y)
 {
@@ -302,18 +306,23 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
 
   // sequentially accumulate the carries
   // note that the last interval does not have a carry
-  for(int i = 0; i < carries.size(); ++i)
+  // XXX find a way to express this loop via a sequential algorithm, perhaps transform_if
+  //     or maybe another reduce_by_key
+  typedef typename std::vector<typename partial_sum_type<Iterator2,BinaryFunction>::type>::size_type size_type;
+  for(size_type i = 0; i < carries.size(); ++i)
   {
     // if our interval has a carry, then we need to sum the carry to the next interval's output offset
     // if it does not have a carry, then we need to ignore carry_value[i]
     if(interval_has_carry(i, interval_size, num_intervals, tail_flags.begin()))
     {
-      int output_idx = interval_output_offsets[i+1];
+      difference_type output_idx = interval_output_offsets[i+1];
 
       values_result[output_idx] = binary_op(values_result[output_idx], carries[i]);
     }
   }
 
   return thrust::make_pair(keys_result + size_of_result, values_result + size_of_result);
+}
+
 }
 

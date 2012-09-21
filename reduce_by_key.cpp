@@ -58,7 +58,7 @@ void test(size_t n)
   std::vector<int> keys_result(n);
   std::vector<int> values_result(n, 13);
 
-  auto ends = ::reduce_by_key(keys.begin(), keys.end(), values.begin(), keys_result.begin(), values_result.begin(), thrust::equal_to<int>(), thrust::plus<int>());
+  auto ends = experimental::reduce_by_key(keys.begin(), keys.end(), values.begin(), keys_result.begin(), values_result.begin(), thrust::equal_to<int>(), thrust::plus<int>());
   keys_result.erase(ends.first, keys_result.end());
   values_result.erase(ends.second, values_result.end());
 
