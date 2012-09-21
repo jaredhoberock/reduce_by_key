@@ -81,7 +81,7 @@ template<typename RandomAccessIterator,
 
 
 template<typename RandomAccessIterator, typename BinaryPredicate>
-  tail_flags<RandomAccessIterator>
+  tail_flags<RandomAccessIterator, BinaryPredicate>
     make_tail_flags(RandomAccessIterator first, RandomAccessIterator last, BinaryPredicate binary_pred)
 {
   return tail_flags<RandomAccessIterator, BinaryPredicate>(first, last, binary_pred);
