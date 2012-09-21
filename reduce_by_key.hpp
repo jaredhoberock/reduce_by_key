@@ -175,9 +175,9 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
     // store to my_keys_result & my_values_result otherwise
     
     // create tail_flags so we can check for a carry
-    auto tail_flags = make_tail_flags(keys_first, keys_first + n);
+    tail_flags<Iterator1,BinaryPredicate> flags = make_tail_flags(keys_first, keys_first + n, binary_pred);
 
-    if(interval_has_carry(interval_idx, interval_size, num_intervals, tail_flags.begin()))
+    if(interval_has_carry(interval_idx, interval_size, num_intervals, flags.begin()))
     {
       // we can ignore the carry's key
       *my_carry_result = carry.second;
@@ -240,7 +240,7 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   std::vector<difference_type> interval_output_offsets(num_intervals + 1, 0);
 
   // first count the number of tail flags in each interval
-  auto tail_flags = make_tail_flags(keys_first, keys_last, binary_pred);
+  ::tail_flags<Iterator1,BinaryPredicate> tail_flags = make_tail_flags(keys_first, keys_last, binary_pred);
   reduce_intervals(tail_flags.begin(), tail_flags.end(), interval_size, interval_output_offsets.begin() + 1, thrust::plus<size_t>());
 
   //std::clog << "reduce_by_key(): num_tail_flags_per_interval: ";
