@@ -4,6 +4,7 @@
 #include <thrust/iterator/iterator_traits.h>
 #include <thrust/detail/minmax.h>
 #include <thrust/system/cpp/memory.h>
+#include <thrust/system/tbb/detail/tag.h>
 #include <thrust/reduce.h>
 #include <iostream>
 #include <cassert>
@@ -64,8 +65,9 @@ template<typename RandomAccessIterator1, typename RandomAccessIterator2, typenam
 }
 
 
-template<typename RandomAccessIterator1, typename Size, typename RandomAccessIterator2, typename BinaryFunction>
-  void reduce_intervals(RandomAccessIterator1 first,
+template<typename System, typename RandomAccessIterator1, typename Size, typename RandomAccessIterator2, typename BinaryFunction>
+  void reduce_intervals(thrust::tbb::dispatchable<System> &,
+                        RandomAccessIterator1 first,
                         RandomAccessIterator1 last,
                         Size interval_size,
                         RandomAccessIterator2 result,
@@ -79,14 +81,15 @@ template<typename RandomAccessIterator1, typename Size, typename RandomAccessIte
 }
 
 
-template<typename RandomAccessIterator1, typename Size, typename RandomAccessIterator2>
-  void reduce_intervals(RandomAccessIterator1 first,
+template<typename System, typename RandomAccessIterator1, typename Size, typename RandomAccessIterator2>
+  void reduce_intervals(thrust::tbb::dispatchable<System> &system,
+                        RandomAccessIterator1 first,
                         RandomAccessIterator1 last,
                         Size interval_size,
                         RandomAccessIterator2 result)
 {
   typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
 
-  return reduce_intervals(first, last, interval_size, result, thrust::plus<value_type>());
+  return reduce_intervals(system, first, last, interval_size, result, thrust::plus<value_type>());
 }
 

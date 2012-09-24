@@ -2,8 +2,10 @@
 
 #include <thrust/iterator/reverse_iterator.h>
 #include <thrust/system/cpp/memory.h>
+#include <thrust/system/tbb/detail/tag.h>
 #include <thrust/reduce.h>
-#include <vector>
+#include <thrust/detail/minmax.h>
+#include <thrust/detail/temporary_array.h>
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 #include <tbb/tbb_thread.h>
@@ -208,6 +210,7 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
     if(interval_has_carry(interval_idx, interval_size, num_intervals, flags.begin()))
     {
       // we can ignore the carry's key
+      // XXX because the carry result is uninitialized, we should copy construct
       *my_carry_result = carry.second;
     }
     else
@@ -227,9 +230,10 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
 }
 
 
-template<typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename BinaryPredicate, typename BinaryFunction>
+template<typename System, typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename BinaryPredicate, typename BinaryFunction>
   thrust::pair<Iterator3,Iterator4>
-    reduce_by_key(Iterator1 keys_first, Iterator1 keys_last, 
+    reduce_by_key(thrust::tbb::dispatchable<System> &system,
+                  Iterator1 keys_first, Iterator1 keys_last, 
                   Iterator2 values_first,
                   Iterator3 keys_result,
                   Iterator4 values_result,
@@ -257,23 +261,17 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   // generate O(P) intervals of sequential work
   // XXX oversubscribing is a tuning opportunity
   const unsigned int subscription_rate = 1;
-  difference_type interval_size = std::min(parallelism_threshold, std::max<difference_type>(n, n / (subscription_rate * p)));
+  difference_type interval_size = thrust::min<difference_type>(parallelism_threshold, thrust::max<difference_type>(n, n / (subscription_rate * p)));
   difference_type num_intervals = divide_ri(n, interval_size);
-
-  //std::clog << "reduce_by_key(): interval_size: " << interval_size << std::endl;
-  //std::clog << "reduce_by_key(): num_intervals: " << num_intervals << std::endl;
 
   // decompose the input into intervals of size N / num_intervals
   // add one extra element to this vector to store the size of the entire result
-  std::vector<difference_type> interval_output_offsets(num_intervals + 1, 0);
+  thrust::detail::temporary_array<difference_type, System> interval_output_offsets(0, system, num_intervals + 1);
 
   // first count the number of tail flags in each interval
   ::tail_flags<Iterator1,BinaryPredicate> tail_flags = make_tail_flags(keys_first, keys_last, binary_pred);
-  reduce_intervals(tail_flags.begin(), tail_flags.end(), interval_size, interval_output_offsets.begin() + 1, thrust::plus<size_t>());
-
-  //std::clog << "reduce_by_key(): num_tail_flags_per_interval: ";
-  //std::copy(interval_output_offsets.begin(), interval_output_offsets.end(), std::ostream_iterator<int>(std::clog, " "));
-  //std::clog << std::endl;
+  reduce_intervals(system, tail_flags.begin(), tail_flags.end(), interval_size, interval_output_offsets.begin() + 1, thrust::plus<size_t>());
+  interval_output_offsets[0] = 0;
 
   // scan the counts to get each body's output offset
   thrust::cpp::tag seq;
@@ -281,33 +279,20 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
                          interval_output_offsets.begin() + 1, interval_output_offsets.end(), 
                          interval_output_offsets.begin() + 1);
 
-  //std::clog << "reduce_by_key(): interval_output_offsets: ";
-  //std::copy(interval_output_offsets.begin(), interval_output_offsets.end(), std::ostream_iterator<int>(std::clog, " "));
-  //std::clog << std::endl;
-
   // do a reduce_by_key serially in each thread
   // the final interval never has a carry by definition, so don't reserve space for it
-  std::vector<typename partial_sum_type<Iterator2,BinaryFunction>::type> carries(num_intervals - 1, 0);
+  thrust::detail::temporary_array<typename partial_sum_type<Iterator2,BinaryFunction>::type, System> carries(0, system, num_intervals - 1);
 
   // force grainsize == 1 with simple_partioner()
   ::tbb::parallel_for(::tbb::blocked_range<difference_type>(0, num_intervals, 1),
     make_serial_reduce_by_key_body(keys_first, values_first, interval_output_offsets.begin(), keys_result, values_result, carries.begin(), n, interval_size, num_intervals, binary_pred, binary_op),
     ::tbb::simple_partitioner());
 
-  //std::clog << "reduce_by_key(): carries: ";
-  //std::copy(carries.begin(), carries.end(), std::ostream_iterator<int>(std::clog, " "));
-  //std::clog << std::endl;
-
-  difference_type size_of_result = interval_output_offsets.back();
-
-  //std::clog << "reduce_by_key(): partial values: ";
-  //std::copy(values_result, values_result + size_of_result, std::ostream_iterator<int>(std::clog, " "));
-  //std::clog << std::endl;
+  difference_type size_of_result = interval_output_offsets[num_intervals];
 
   // sequentially accumulate the carries
   // note that the last interval does not have a carry
-  // XXX find a way to express this loop via a sequential algorithm, perhaps transform_if
-  //     or maybe another reduce_by_key
+  // XXX find a way to express this loop via a sequential algorithm, perhaps reduce_by_key
   typedef typename std::vector<typename partial_sum_type<Iterator2,BinaryFunction>::type>::size_type size_type;
   for(size_type i = 0; i < carries.size(); ++i)
   {
@@ -322,6 +307,20 @@ template<typename Iterator1, typename Iterator2, typename Iterator3, typename It
   }
 
   return thrust::make_pair(keys_result + size_of_result, values_result + size_of_result);
+}
+
+
+template<typename Iterator1, typename Iterator2, typename Iterator3, typename Iterator4, typename BinaryPredicate, typename BinaryFunction>
+  thrust::pair<Iterator3,Iterator4>
+    reduce_by_key(Iterator1 keys_first, Iterator1 keys_last, 
+                  Iterator2 values_first,
+                  Iterator3 keys_result,
+                  Iterator4 values_result,
+                  BinaryPredicate binary_pred,
+                  BinaryFunction binary_op)
+{
+  thrust::tbb::tag tbb;
+  return reduce_by_key(tbb, keys_first, keys_last, values_first, keys_result, values_result, binary_pred, binary_op);
 }
 
 }
